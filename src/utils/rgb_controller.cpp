@@ -1,97 +1,122 @@
 #include "rgb_controller.h"
 
 #include <Arduino.h>
-#include <cstdio>
 
 namespace rgb_controller {
 namespace {
 
-constexpr unsigned long BLINK_INTERVAL_MS = 500;
+constexpr unsigned long FRAME_INTERVAL_MS = 20;
+constexpr unsigned long MIN_PERIOD_MS = 100;
+constexpr unsigned long MAX_PERIOD_MS = 10000;
 
 std::uint8_t rgbPin = 48;
-std::uint8_t red = 32;
-std::uint8_t green = 0;
-std::uint8_t blue = 0;
+std::uint8_t colorRed = 255;
+std::uint8_t colorGreen = 0;
+std::uint8_t colorBlue = 85;
+std::uint8_t colorBrightness = 64;
 
-bool blinking = false;
-bool ledOn = true;
+Effect currentEffect = Effect::Solid;
+unsigned long effectPeriodMs = 1000;
+unsigned long effectStartedAt = 0;
+unsigned long lastFrameAt = 0;
 
-unsigned long lastBlink = 0;
-String input;
-
-void updateLed() {
-    if (ledOn) {
-        neopixelWrite(rgbPin, red, green, blue);
-    } else {
-        neopixelWrite(rgbPin, 0, 0, 0);
-    }
+std::uint8_t scaleChannel(std::uint8_t channel, std::uint8_t intensity) {
+    const std::uint32_t scaled =
+        static_cast<std::uint32_t>(channel) * colorBrightness * intensity;
+    return static_cast<std::uint8_t>(scaled / (255UL * 255UL));
 }
 
-void showHelp() {
-    Serial.println();
-    Serial.println("RGB commands:");
-    Serial.println("  R G B  - set a color, for example: 32 0 20");
-    Serial.println("  blink  - blink the current color");
-    Serial.println("  solid  - stop blinking");
-    Serial.println("  off    - switch the LED off");
-    Serial.println("  help   - show these commands");
-    Serial.println();
-    Serial.println("Start with values around 20-50; 255 is very bright.");
+void writeColor(
+    std::uint8_t redValue,
+    std::uint8_t greenValue,
+    std::uint8_t blueValue,
+    std::uint8_t intensity = 255
+) {
+    neopixelWrite(
+        rgbPin,
+        scaleChannel(redValue, intensity),
+        scaleChannel(greenValue, intensity),
+        scaleChannel(blueValue, intensity)
+    );
 }
 
-void handleCommand(String command) {
-    command.trim();
+void writeOff() {
+    neopixelWrite(rgbPin, 0, 0, 0);
+}
 
-    if (command.isEmpty()) {
+void rainbowColor(
+    std::uint8_t position,
+    std::uint8_t& redValue,
+    std::uint8_t& greenValue,
+    std::uint8_t& blueValue
+) {
+    if (position < 85) {
+        redValue = 255 - position * 3;
+        greenValue = position * 3;
+        blueValue = 0;
         return;
     }
 
-    String lower = command;
-    lower.toLowerCase();
-
-    if (lower == "blink") {
-        setBlinking(true);
-        Serial.println("Blinking");
+    if (position < 170) {
+        position -= 85;
+        redValue = 0;
+        greenValue = 255 - position * 3;
+        blueValue = position * 3;
         return;
     }
 
-    if (lower == "solid") {
-        setBlinking(false);
-        Serial.println("Solid color");
-        return;
-    }
+    position -= 170;
+    redValue = position * 3;
+    greenValue = 0;
+    blueValue = 255 - position * 3;
+}
 
-    if (lower == "off") {
-        turnOff();
-        Serial.println("LED off");
-        return;
-    }
+void renderEffect() {
+    const unsigned long elapsed = millis() - effectStartedAt;
 
-    if (lower == "help") {
-        showHelp();
-        return;
-    }
+    switch (currentEffect) {
+        case Effect::Solid:
+            writeColor(colorRed, colorGreen, colorBlue);
+            break;
 
-    int requestedRed;
-    int requestedGreen;
-    int requestedBlue;
+        case Effect::Blink: {
+            const unsigned long halfPeriod = max(1UL, effectPeriodMs / 2);
+            const bool visible = (elapsed / halfPeriod) % 2 == 0;
+            if (visible) {
+                writeColor(colorRed, colorGreen, colorBlue);
+            } else {
+                writeOff();
+            }
+            break;
+        }
 
-    if (sscanf(
-            command.c_str(),
-            "%d %d %d",
-            &requestedRed,
-            &requestedGreen,
-            &requestedBlue
-        ) == 3) {
-        setColor(
-            static_cast<std::uint8_t>(constrain(requestedRed, 0, 255)),
-            static_cast<std::uint8_t>(constrain(requestedGreen, 0, 255)),
-            static_cast<std::uint8_t>(constrain(requestedBlue, 0, 255))
-        );
+        case Effect::Pulse: {
+            const unsigned long phase = elapsed % effectPeriodMs;
+            const std::uint16_t triangle = static_cast<std::uint16_t>(
+                (phase * 510UL) / effectPeriodMs
+            );
+            const std::uint8_t intensity = static_cast<std::uint8_t>(
+                triangle <= 255 ? triangle : 510 - triangle
+            );
+            writeColor(colorRed, colorGreen, colorBlue, intensity);
+            break;
+        }
 
-        Serial.printf("Color set to R=%u G=%u B=%u\n", red, green, blue);
-    } else {
-        Serial.println("Unknown command. Type: help");
+        case Effect::Rainbow: {
+            const std::uint8_t position = static_cast<std::uint8_t>(
+                ((elapsed % effectPeriodMs) * 256UL) / effectPeriodMs
+            );
+            std::uint8_t rainbowRed;
+            std::uint8_t rainbowGreen;
+            std::uint8_t rainbowBlue;
+            rainbowColor(position, rainbowRed, rainbowGreen, rainbowBlue);
+            writeColor(rainbowRed, rainbowGreen, rainbowBlue);
+            break;
+        }
+
+        case Effect::Off:
+            writeOff();
+            break;
     }
 }
 
@@ -99,57 +124,89 @@ void handleCommand(String command) {
 
 void begin(std::uint8_t pin) {
     rgbPin = pin;
-
-    Serial.begin(115200);
-    delay(1000);
-
-    updateLed();
-    Serial.println("ESP32-S3 RGB controller ready");
-    showHelp();
+    effectStartedAt = millis();
+    renderEffect();
 }
 
 void update() {
-    while (Serial.available()) {
-        const char character = Serial.read();
-
-        if (character == '\n' || character == '\r') {
-            if (!input.isEmpty()) {
-                handleCommand(input);
-                input = "";
-            }
-        } else {
-            input += character;
-        }
-    }
-
-    if (blinking && millis() - lastBlink >= BLINK_INTERVAL_MS) {
-        lastBlink = millis();
-        ledOn = !ledOn;
-        updateLed();
+    if (millis() - lastFrameAt >= FRAME_INTERVAL_MS) {
+        lastFrameAt = millis();
+        renderEffect();
     }
 }
 
 void setColor(std::uint8_t newRed, std::uint8_t newGreen, std::uint8_t newBlue) {
-    red = newRed;
-    green = newGreen;
-    blue = newBlue;
+    colorRed = newRed;
+    colorGreen = newGreen;
+    colorBlue = newBlue;
 
-    blinking = false;
-    ledOn = true;
-    updateLed();
+    setEffect(Effect::Solid);
+}
+
+void setEffect(Effect newEffect) {
+    currentEffect = newEffect;
+    effectStartedAt = millis();
+    renderEffect();
+}
+
+void setBrightness(std::uint8_t newBrightness) {
+    colorBrightness = newBrightness;
+    renderEffect();
+}
+
+void setPeriod(unsigned long periodMs) {
+    effectPeriodMs = constrain(periodMs, MIN_PERIOD_MS, MAX_PERIOD_MS);
+    effectStartedAt = millis();
+    renderEffect();
 }
 
 void setBlinking(bool enabled) {
-    blinking = enabled;
-    ledOn = true;
-    lastBlink = millis();
-    updateLed();
+    setEffect(enabled ? Effect::Blink : Effect::Solid);
 }
 
 void turnOff() {
-    blinking = false;
-    ledOn = false;
-    updateLed();
+    setEffect(Effect::Off);
+}
+
+Effect effect() {
+    return currentEffect;
+}
+
+const char* effectName() {
+    switch (currentEffect) {
+        case Effect::Solid:
+            return "solid";
+        case Effect::Blink:
+            return "blink";
+        case Effect::Pulse:
+            return "pulse";
+        case Effect::Rainbow:
+            return "rainbow";
+        case Effect::Off:
+            return "off";
+    }
+
+    return "unknown";
+}
+
+std::uint8_t red() {
+    return colorRed;
+}
+
+std::uint8_t green() {
+    return colorGreen;
+}
+
+std::uint8_t blue() {
+    return colorBlue;
+}
+
+std::uint8_t brightness() {
+    return colorBrightness;
+}
+
+unsigned long period() {
+    return effectPeriodMs;
 }
 
 }  // namespace rgb_controller

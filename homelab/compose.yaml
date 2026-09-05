@@ -1,0 +1,57 @@
+name: esp32-home
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: esp32-mosquitto
+    user: "1000:1000"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - /home/log/services/esp32-home/mosquitto:/mosquitto/data
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-h", "127.0.0.1", "-t", "$$SYS/broker/version", "-C", "1", "-W", "3"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  esp32-bridge:
+    build: ./bridge
+    container_name: esp32-usb-bridge
+    user: "1000:1000"
+    group_add:
+      - "20"
+    restart: unless-stopped
+    network_mode: host
+    devices:
+      - /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C38119516-if00:/dev/ttyACM0
+    environment:
+      TZ: Asia/Kolkata
+      SERIAL_PORT: /dev/ttyACM0
+      MQTT_HOST: 127.0.0.1
+      MQTT_PORT: "1883"
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: "8080"
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: homeassistant
+    restart: unless-stopped
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    network_mode: host
+    environment:
+      TZ: Asia/Kolkata
+    volumes:
+      - /home/log/services/esp32-home/homeassistant:/config
+      - ./homeassistant/configuration.yaml:/config/configuration.yaml:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /run/dbus:/run/dbus:ro
+    stop_grace_period: 60s

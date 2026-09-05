@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Desk ESP32-S3</title>
+  <style>
+    :root{color-scheme:dark;font-family:system-ui,sans-serif;background:#0e1014;color:#f7f7f8}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;padding:22px;display:grid;place-items:center}
+    main{width:min(520px,100%)}header{margin-bottom:18px}h1{font-size:1.7rem;margin:0 0 5px}
+    p{color:#aeb4c0;margin:0}.connection{display:inline-block;margin-top:12px;padding:7px 10px;border-radius:999px;background:#3a2024;color:#fca5a5}
+    .connection.online{background:#153d2b;color:#86efac}.card{margin-top:14px;padding:20px;border:1px solid #303540;border-radius:18px;background:#191c22}
+    h2{margin:0 0 4px;font-size:1.15rem}label{display:block;margin:17px 0 7px;font-weight:650}
+    .value{float:right;color:#c4b5fd;font-variant-numeric:tabular-nums}input[type=color]{width:100%;height:65px;border:1px solid #454b57;border-radius:12px;background:#0e1014;padding:4px}
+    input[type=range]{width:100%;accent-color:#8b5cf6}.buttons{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-top:17px}
+    button{font:inherit;font-weight:650;padding:11px;border-radius:11px;border:1px solid #454b57;background:#292e37;color:#fff;cursor:pointer}
+    button:hover{background:#343a45}button.off{grid-column:1/-1;background:#3a2024;border-color:#67333b}.active{outline:2px solid #8b5cf6}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Desk ESP32-S3</h1>
+    <p>USB-controlled by the homelab over Tailscale</p>
+    <span class="connection" id="connection">Connecting…</span>
+  </header>
+
+  <section class="card">
+    <h2>Onboard RGB</h2>
+    <p>The colour LED on the ESP32 board</p>
+    <label>Colour</label><input id="color" type="color" value="#ff0055">
+    <label>Brightness <span class="value" id="rgbBrightnessValue"></span></label>
+    <input id="rgbBrightness" type="range" min="0" max="255" value="64">
+    <label>Animation time <span class="value" id="rgbPeriodValue"></span></label>
+    <input id="rgbPeriod" type="range" min="100" max="5000" step="100" value="1000">
+    <div class="buttons" id="rgbButtons">
+      <button data-effect="solid">Solid</button><button data-effect="blink">Blink</button>
+      <button data-effect="pulse">Pulse</button><button data-effect="rainbow">Rainbow</button>
+      <button class="off" data-effect="off">Turn off</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>External red LED — GPIO4</h2>
+    <p>The LED wired through the resistor</p>
+    <label>Brightness <span class="value" id="externalBrightnessValue"></span></label>
+    <input id="externalBrightness" type="range" min="0" max="255" value="128">
+    <label>Animation time <span class="value" id="externalPeriodValue"></span></label>
+    <input id="externalPeriod" type="range" min="100" max="5000" step="100" value="1000">
+    <div class="buttons" id="externalButtons">
+      <button data-effect="solid">Turn on</button><button data-effect="blink">Blink</button>
+      <button data-effect="pulse">Pulse</button><button class="off" data-effect="off">Turn off</button>
+    </div>
+  </section>
+</main>
+<script>
+const $=selector=>document.querySelector(selector);
+let rgbEffect='off',externalEffect='off',rgbTimer,externalTimer;
+
+async function send(path,payload){
+  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  if(!response.ok)throw new Error((await response.json()).error||'request failed');
+}
+function labels(){
+  $('#rgbBrightnessValue').textContent=Math.round($('#rgbBrightness').value*100/255)+'%';
+  $('#externalBrightnessValue').textContent=Math.round($('#externalBrightness').value*100/255)+'%';
+  $('#rgbPeriodValue').textContent=$('#rgbPeriod').value+' ms';
+  $('#externalPeriodValue').textContent=$('#externalPeriod').value+' ms';
+}
+function active(container,effect){
+  document.querySelectorAll(container+' button').forEach(button=>button.classList.toggle('active',button.dataset.effect===effect));
+}
+function sendRgb(effect=rgbEffect){
+  rgbEffect=effect;
+  active('#rgbButtons',effect);
+  return send('/api/rgb',{color:$('#color').value,brightness:+$('#rgbBrightness').value,period:+$('#rgbPeriod').value,effect});
+}
+function sendExternal(effect=externalEffect){
+  externalEffect=effect;
+  active('#externalButtons',effect);
+  return send('/api/external',{brightness:+$('#externalBrightness').value,period:+$('#externalPeriod').value,effect});
+}
+document.querySelectorAll('#rgbButtons button').forEach(button=>button.onclick=()=>sendRgb(button.dataset.effect));
+document.querySelectorAll('#externalButtons button').forEach(button=>button.onclick=()=>sendExternal(button.dataset.effect));
+$('#color').oninput=()=>{clearTimeout(rgbTimer);rgbTimer=setTimeout(()=>sendRgb(rgbEffect==='off'?'solid':rgbEffect),100)};
+$('#rgbBrightness').oninput=()=>{labels();clearTimeout(rgbTimer);rgbTimer=setTimeout(()=>sendRgb(rgbEffect==='off'?'solid':rgbEffect),100)};
+$('#rgbPeriod').oninput=()=>{labels();clearTimeout(rgbTimer);rgbTimer=setTimeout(()=>sendRgb(),100)};
+$('#externalBrightness').oninput=()=>{labels();clearTimeout(externalTimer);externalTimer=setTimeout(()=>sendExternal(externalEffect==='off'?'solid':externalEffect),100)};
+$('#externalPeriod').oninput=()=>{labels();clearTimeout(externalTimer);externalTimer=setTimeout(()=>sendExternal(),100)};
+
+async function refresh(){
+  try{
+    const state=await (await fetch('/api/state',{cache:'no-store'})).json();
+    $('#connection').textContent=state.connected?'ESP32 connected':'ESP32 disconnected';
+    $('#connection').classList.toggle('online',state.connected);
+    if(state.rgb.effect!=='unknown'){
+      const rgb=state.rgb;
+      $('#color').value='#'+[rgb.red,rgb.green,rgb.blue].map(v=>v.toString(16).padStart(2,'0')).join('');
+      $('#rgbBrightness').value=rgb.brightness;$('#rgbPeriod').value=rgb.period;rgbEffect=rgb.effect;active('#rgbButtons',rgbEffect);
+    }
+    if(state.external.effect!=='unknown'){
+      const led=state.external;
+      $('#externalBrightness').value=led.brightness;$('#externalPeriod').value=led.period;externalEffect=led.effect;active('#externalButtons',externalEffect);
+    }
+    labels();
+  }catch(error){$('#connection').textContent='Homelab bridge unavailable';$('#connection').classList.remove('online')}
+}
+labels();refresh();setInterval(refresh,1500);
+</script>
+</body>
+</html>
+

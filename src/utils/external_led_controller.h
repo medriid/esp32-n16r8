@@ -2,32 +2,25 @@
 
 #include <cstdint>
 
-namespace rgb_controller {
+namespace external_led_controller {
 
 enum class Effect : std::uint8_t {
     Solid,
     Blink,
     Pulse,
-    Rainbow,
     Off,
 };
 
 void begin(std::uint8_t pin);
 void update();
 
-void setColor(std::uint8_t red, std::uint8_t green, std::uint8_t blue);
 void setEffect(Effect effect);
 void setBrightness(std::uint8_t brightness);
 void setPeriod(unsigned long periodMs);
-void setBlinking(bool enabled);
-void turnOff();
 
 Effect effect();
 const char* effectName();
-std::uint8_t red();
-std::uint8_t green();
-std::uint8_t blue();
 std::uint8_t brightness();
 unsigned long period();
 
-}  // namespace rgb_controller
+}  // namespace external_led_controller
